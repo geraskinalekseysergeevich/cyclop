@@ -174,7 +174,7 @@ final class ConfigStore: ObservableObject {
         } else if defaults.bool(forKey: "privacyMode") {
             // The legacy switch covered everything or nothing — see
             // `PrivacyMode.init` before this store existed.
-            file.privacy = ["clipboard", "snippets", "notes"]
+            file.privacy = ["clipboard", "snippets", "calendar", "notes"]
         }
         if let speed = defaults.object(forKey: "teleprompter.speed") as? Double {
             file.teleprompter.speed = speed

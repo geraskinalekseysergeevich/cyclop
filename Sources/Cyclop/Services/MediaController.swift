@@ -306,13 +306,9 @@ final class MediaController: ObservableObject {
             guard self.artworkKey != state.key else { return }
             self.artworkKey = state.key
             self.artwork = nil
-            // Whether a deadline makes sense depends on who is being asked.
-            // Spotify's road is ours: up to three `URLSession` requests, and
-            // a session always answers — a timer beside it could only say
-            // "no cover" while those requests were still running, and then be
-            // contradicted by the cover arriving. Apple Music's road is an
-            // Apple event, which can sit on a player that has stopped
-            // answering, so there the bounded window stays.
+            // Apple Music answers through an Apple event, which can hang if the
+            // player stops responding. Spotify covers are not fetched because
+            // their artwork is available only from a remote URL.
             switch state.app {
             case .spotify: self.awaitArtwork()
             case .music: self.expectArtwork(for: state.key)

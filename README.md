@@ -2,10 +2,10 @@
 
 *English · [Русский](README.ru.md)*
 
-The MacBook notch as a working tool. This fork's local build is a native
-SwiftUI/AppKit panel for files, clipboard history, snippets, translation, notes,
-a teleprompter and utilities. Music, Calendar and Currency are excluded from
-the application build; see [SECURITY.md](SECURITY.md) for the local-only scope.
+The MacBook notch as a working tool. This fork is a native SwiftUI/AppKit panel
+for music controls, files, clipboard history, snippets, calendar, translation,
+currency conversion, notes, a teleprompter and utilities. It makes no app-owned
+network requests; see [SECURITY.md](SECURITY.md) for offline setup and limits.
 
 [![build](https://github.com/akalikbergenov/cyclop/actions/workflows/build.yml/badge.svg)](https://github.com/akalikbergenov/cyclop/actions/workflows/build.yml)
 [![Buy Me a Coffee](https://img.shields.io/badge/buy%20me%20a%20coffee-%E2%98%95-FFDD00?style=flat-square&labelColor=000000)](https://buymeacoffee.com/akalikbergenov)
@@ -19,10 +19,13 @@ release linked from the original project includes features that this fork omits.
 
 | Tab | What it does |
 |---|---|
+| **Music** | Track, artist, artwork, seek bar and playback controls for players macOS can see. Spotify playback metadata and controls are local; its artwork is not fetched. |
 | **Shelf** | Drag files into the notch and they stay there until needed; drag a card out and the file goes wherever it is dropped. A click selects a card, ⌘-click selects several, and then the whole group is dragged. A screenshot taken to the clipboard is saved as a file and lands here too — including one taken on an iPhone, if you copy it there |
 | **Clipboard** | The last 40 copies; a click puts an entry back on the clipboard |
 | **Snippets** | A hand-kept list of what you are tired of retyping: an address, a phone number, an email. Added with a button in the panel, removed with the cross on a card; a click puts the text on the clipboard. The same list lives in `~/Library/Application Support/Cyclop/snippets.json` and can be edited there instead |
+| **Calendar** | The next meeting and the rest of the week's events. Meeting links open in the user's default app when clicked. |
 | **Translate** | Type on the left, the translation appears on the right — by itself, offline, using macOS's own facilities. English goes to Russian, Russian to English; the direction comes from the script the text is written in. macOS does not preinstall language packs, so the first time you have to download one: System Settings → General → Language & Region → "Translation Languages…" |
+| **Currency** | Convert between currencies using a local rate table. Rates are not fetched by the app; see [SECURITY.md](SECURITY.md) for the file location and format. |
 | **Teleprompter** | A script that scrolls under the camera at a speed you set. The notch is the one place on the screen a teleprompter belongs: reading happens right beside the lens, so on the recording the eyes stay on the camera instead of travelling to a window below it. The panel holds itself open while the text is moving — reading a script means not touching the trackpad |
 | **Notes** | Scratch, on the right rail of icons: jot something down, come back, delete it or carry it off through the clipboard. Hovering lands with the caret ready; blank notes sweep themselves out |
 
@@ -73,13 +76,14 @@ To package a DMG locally:
 ./Scripts/dmg.sh
 ```
 
-The original project's release builds include Music, Calendar and Currency,
-which this fork removes. Use an app built from this checkout.
+Use an app built from this checkout. Upstream release builds do not include
+this fork's offline currency behavior or Spotify artwork restriction.
 
 ## Permissions
 
-**Nothing at launch, and nothing until you press the button that needs it.**
-The local build has no Apple Events or Calendar entitlement.
+**Nothing at launch, and nothing until you open the feature that needs it.**
+Calendar access and Apple Events automation are used for Calendar and player
+controls. macOS asks when access is needed.
 
 **Accessibility**, for the keyboard lock in Utilities. It deserves to be named
 plainly: it lets an app see and swallow system key
@@ -117,6 +121,8 @@ timer, and what sitting idle costs — see the architecture notes:
 - macOS does not preinstall translation languages — the first time, the pack has
   to be downloaded through System Settings; the panel says so and opens the right
   screen.
+- Currency conversion needs a locally supplied rate file. Live rates are not
+  downloaded.
 
 ## Layout
 
@@ -137,7 +143,7 @@ Sources/Cyclop
 ├── Model/
 │   ├── NotchViewModel.swift
 │   └── PrivacyMode.swift      hiding contents: sections and reveals
-├── Services/                    Calendar, Currency and Music sources are excluded
+├── Services/
 │   ├── ShelfStore.swift
 │   ├── ClipboardStore.swift
 │   ├── ScreenshotVault.swift  clipboard screenshots onto disk
@@ -152,13 +158,11 @@ Sources/Cyclop
 └── UI/                        NotchShape, tab panes, theme
 ```
 
-The excluded feature source files remain in the checkout, but are not compiled
-into this app target.
-
 ## Contributing
 
 The rules are short and live in [CONTRIBUTING.md](CONTRIBUTING.md). This build
-makes no app-initiated network requests and asks for no permission at launch.
+makes no app-owned network requests. macOS may download translation language
+packs, and clicking a meeting link hands it to the user's default app.
 
 What the app reads, what it keeps and where, where it goes on the network —
 [SECURITY.md](SECURITY.md). The channel for vulnerabilities is there too:
