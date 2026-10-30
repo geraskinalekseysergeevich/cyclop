@@ -3,9 +3,7 @@
 *English · [Русский](architecture.ru.md)*
 
 Notes on the decisions the code does not show: why the window is shaped
-the way it is, why the pointer is polled on a timer, why Now Playing
-lives inside perl. These lived in the README and took up more than half
-of it — moved here whole, word for word.
+the way it is and why the pointer is polled on a timer.
 
 
 **The window.** One `NSPanel` per display — borderless, non-activating, one
@@ -19,7 +17,7 @@ some other machine's idea of the main display. The split follows the pointer: it
 is on exactly one display at a time, so open, drop-targeted and holding-the-
 keyboard belong to a screen (`PanelState`) while the tab, the stores and the
 running services are shared by all of them (`NotchViewModel`) — one clipboard
-history, one Now Playing helper, one of everything that costs something.
+history, one media controller, one of everything that costs something.
 Displays are reconciled by `CGDirectDisplayID` rather than by position in
 `NSScreen.screens`, which hands out fresh instances and reorders them on every
 reconfiguration; a display whose notch has not moved keeps its panel untouched.
@@ -237,46 +235,12 @@ The strip is reached by throwing the pointer up, while a pointer travelling to a
 menu bar icon or a tab stays below it. The delay before opening is the same
 200 ms. The old full-height notch comes back with a switch in Settings.
 
-**Now Playing.** In macOS 15.4 the `mediaremoted` daemon began answering only
-clients it trusts. For an ordinary app that looks like this (checked on 15.7.5
-with music playing):
-
-| Call | Answer |
-|---|---|
-| `MRMediaRemoteGetNowPlayingInfo` | 0 keys |
-| `MRMediaRemoteGetNowPlayingApplicationIsPlaying` | `false` |
-| `MRMediaRemoteGetNowPlayingApplicationPID` | 0 |
-| `kMRMediaRemote…DidChange` notifications, 180 s with track changes | not one |
-
-Claiming the `com.apple.mediaremote.external-access` entitlement is not an option
-either: it makes it into the signature, but the process is killed at startup
-(SIGKILL, exit 137).
-
-The way around needs neither SIP disabled nor anything set in a browser.
-`/usr/bin/perl` is an Apple platform binary (`Platform identifier=16`) that the
-daemon trusts, and it is signed without library validation, meaning it can load a
-foreign library. `Sources/CyclopMediaHelper/helper.m` compiles into
-`libcyclopmedia.dylib`, is loaded into perl through `DynaLoader` and from there
-receives the daemon's full answer:
-
-```
-$ perl -e 'use DynaLoader; DynaLoader::dl_load_file($ARGV[0], 0x01); sleep 4' libcyclopmedia.dylib
-14 keys: Title=Sen, Artist=Yerbol Narimanuly, Album=Sen,
-         Duration=202.39, ElapsedTime=131.23, ArtworkData=<10681 bytes JPEG>
-```
-
-The helper prints one line of JSON per change and takes commands on stdin;
-`NowPlayingFeed` reads its stdout. Play/pause, next/prev and seeking go the same
-way (`MRMediaRemoteSendCommand`, `MRMediaRemoteSetElapsedTime`). The helper exits
-as soon as its stdin closes, so it cannot outlive the app.
-
-This works for any source macOS itself can see: a player, a browser tab,
-anything. The source name comes from the pid of the session's owner.
-
-**The fallback.** If the helper fails to start three times in a row (perl
-removed, the daemon closed to platform binaries too), `MediaController` switches
-to scripting Apple Music and Spotify over AppleScript — and then, and only then,
-the system asks for Automation.
+**Music.** The tab reads and controls Apple Music and Spotify through
+AppleScript and their distributed notifications. It starts observing when the
+panel opens and stops when it closes. macOS manages the Automation permission.
+Browser players are not supported; Spotify artwork is not downloaded. The
+implementation uses public Apple Events APIs and no helper process or private
+framework.
 
 **The cost of sitting still.** At rest the app does nothing, and that is
 measurable: with the pointer still and the panel collapsed it sits at 0.0 % CPU,

@@ -4,7 +4,7 @@ import Combine
 @MainActor
 final class NotchViewModel: ObservableObject {
     enum Tab: String, CaseIterable, Identifiable {
-        case media, shelf, clipboard, snippets, calendar, translate, currency, notes, teleprompter, utilities, settings
+        case media, shelf, clipboard, snippets, calendar, translate, notes, teleprompter, utilities, settings
         var id: String { rawValue }
 
         var symbol: String {
@@ -15,7 +15,6 @@ final class NotchViewModel: ObservableObject {
             case .snippets: return "pin.fill"
             case .calendar: return "calendar"
             case .translate: return "translate"
-            case .currency: return "dollarsign.circle"
             case .notes: return "note.text"
             case .teleprompter: return "text.viewfinder"
             case .utilities: return "wrench.and.screwdriver.fill"
@@ -31,7 +30,6 @@ final class NotchViewModel: ObservableObject {
             case .snippets: return localized("Snippets")
             case .calendar: return localized("Calendar")
             case .translate: return localized("Translate")
-            case .currency: return localized("Currency")
             case .notes: return localized("Notes")
             case .teleprompter: return localized("Teleprompter")
             case .utilities: return localized("Utilities")
@@ -42,7 +40,7 @@ final class NotchViewModel: ObservableObject {
         /// Tabs with a field in them. Landing on one hands it the keyboard, so
         /// that arriving and typing is a single move.
         var needsKeyboard: Bool {
-            self == .translate || self == .currency || self == .snippets || self == .notes
+            self == .translate || self == .snippets || self == .notes
         }
 
         /// Tabs whose content needs more than the standard 208 pt.
@@ -66,14 +64,14 @@ final class NotchViewModel: ObservableObject {
         /// objection in a quieter voice. Growth continues in a second column
         /// on the right, which the scratch notes open: they are the daily tab
         /// of that column, so they sit where the pointer lands first. The rare
-        /// modes — the converter, the teleprompter — come after them, by the
+        /// rare mode — the teleprompter — comes after them, by the
         /// rule from #43 that the rail is ordered by how often a tab is
         /// glanced at. Settings joins that column rather than the content
         /// rail: it is not something to hover past on the way to a track or a
         /// calendar, so it sits last, furthest from the tabs people actually
         /// rest on.
         static let leftRail: [Tab] = [.media, .shelf, .clipboard, .snippets, .calendar, .translate]
-        static let rightRail: [Tab] = [.notes, .currency, .teleprompter, .utilities, .settings]
+        static let rightRail: [Tab] = [.notes, .teleprompter, .utilities, .settings]
     }
 
     /// What every screen's panel adds up to, kept by `NotchController`: this
@@ -130,8 +128,7 @@ final class NotchViewModel: ObservableObject {
     }
 
     /// What a tab keeps running while nobody is looking at it. Only a few have
-    /// anything: the rest are a file read on the way in, or a field. Currency
-    /// reads its rate table from disk only while its tab is enabled.
+    /// anything: the rest are a file read on the way in, or a field.
     private func startBackground(of target: Tab) {
         switch target {
         case .media:
@@ -148,8 +145,6 @@ final class NotchViewModel: ObservableObject {
             // Off until the user grants a folder through `requestAccess`;
             // this only re-arms a watch already approved on a previous launch.
             screenshotFolder.resumeIfEnabled()
-        case .currency:
-            currencies.start()
         case .snippets, .translate, .notes, .teleprompter, .utilities, .settings:
             break
         }
@@ -161,7 +156,6 @@ final class NotchViewModel: ObservableObject {
         case .clipboard: clipboard.stop()
         case .calendar: calendar.stop()
         case .shelf: screenshotFolder.stop()
-        case .currency: break
         // Taking the tab off the rail with the screen still covered would
         // leave the tap installed and no way back to it.
         case .utilities: keyboardLock.unlock()
@@ -207,9 +201,6 @@ final class NotchViewModel: ObservableObject {
             // prompt. It is asked here, with the shelf on screen, rather than
             // at launch with nothing to explain it.
             if tab == .shelf { shelf.refreshFromDisk() }
-            // Rates update on a timer already; opening the tab asks once more
-            // so a stale cache from the last few hours does not sit there.
-            if tab == .currency { currencies.refreshIfNeeded() }
             // Leaving the notes sweeps out the blank ones — they cost one
             // hover to recreate, and a trail of empty cards is the clutter a
             // scratchpad exists to avoid.
@@ -240,7 +231,6 @@ final class NotchViewModel: ObservableObject {
     let screenshotFolder: ScreenshotFolderWatcher
     let calendar: CalendarStore
     let translator: Translator
-    let currencies: CurrencyStore
     let snippets: SnippetStore
     let notes: NoteStore
     let teleprompter: TeleprompterStore
@@ -260,7 +250,6 @@ final class NotchViewModel: ObservableObject {
         self.screenshotFolder = ScreenshotFolderWatcher()
         self.calendar = CalendarStore()
         self.translator = Translator()
-        self.currencies = CurrencyStore()
         self.snippets = SnippetStore()
         self.notes = NoteStore()
         self.teleprompter = TeleprompterStore()
@@ -278,7 +267,7 @@ final class NotchViewModel: ObservableObject {
         // `isOpen` is itself @Published and its own send does that.
         //
         // The stores with a text field in their pane — the translator, the
-        // currency converter, the snippets and the notes — are deliberately
+        // snippets and the notes — are deliberately
         // absent. They change on every keystroke, and redrawing the whole
         // panel per letter costs more than a stale counter: it rebuilds the
         // field, which drops the focus, so the first letter typed is also the

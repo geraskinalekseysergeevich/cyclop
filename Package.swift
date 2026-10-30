@@ -12,6 +12,10 @@ let package = Package(
         .executableTarget(
             name: "Cyclop",
             path: "Sources/Cyclop",
+            exclude: [
+                "Services/CurrencyStore.swift",
+                "UI/CurrencyPane.swift",
+            ],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         // Только чистые сторы — разбор файла, дедупликация, порядок. Панель

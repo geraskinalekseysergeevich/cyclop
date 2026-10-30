@@ -1,10 +1,7 @@
 import AppKit
 
-/// Now Playing for whatever the system is playing — browser tabs included.
-///
-/// Primary source is `NowPlayingFeed`, which reaches MediaRemote through a
-/// helper hosted by `/usr/bin/perl`. If that route ever closes, the controller
-/// falls back to scripting Apple Music and Spotify directly.
+/// Reads and controls Apple Music and Spotify through their AppleScript APIs.
+/// Browser players are not visible through this public scripting route.
 @MainActor
 final class MediaController: ObservableObject {
     struct Track: Equatable {
@@ -16,206 +13,133 @@ final class MediaController: ObservableObject {
 
     @Published private(set) var track: Track?
     @Published private(set) var artwork: NSImage?
-    /// Whether a cover may still be on its way for the track now showing.
-    ///
-    /// The skeleton is a promise that something is coming, and for most track
-    /// changes it is true: the system publishes the title before it has the
-    /// cover. It stops being true the moment every source has been asked and
-    /// none had one — a local file, a podcast, a stream. Left alone the
-    /// shimmer ran forever and the pane never said what had happened (#78).
     @Published private(set) var artworkIsPending = false
     @Published private(set) var isPlaying = false
     @Published private(set) var duration: TimeInterval = 0
     @Published private(set) var position: TimeInterval = 0
     @Published private(set) var sourceName: String?
-    /// Whether the player accepts skipping at all. A browser tab playing one
-    /// video registers no handler for it — the command leaves and nothing
-    /// happens — so the buttons go dim rather than dead, the way the system's
-    /// own Now Playing widget dims them for the same session. True until told
-    /// otherwise: the scripted fallback below drives Music and Spotify, and
-    /// both skip fine.
     @Published private(set) var canSkip = true
-
-    private let feed = NowPlayingFeed()
-    private var feedAvailable = true
 
     private var activeApp: PlayerApp?
     private var artworkKey: String?
-    /// Cancelled by an arriving cover or by the next track — see `expectArtwork`.
     private var artworkDeadline: DispatchWorkItem?
     private var anchor: (position: TimeInterval, at: Date)?
-    /// Where we asked the player to jump, and when — see `apply`.
     private var pendingSeek: (target: TimeInterval, at: Date)?
     private var ticker: Timer?
     private var observers: [Any] = []
-    /// Whether the panel is open — the ticker below runs only then.
+    private var isStarted = false
     private var isActive = false
 
-    // MARK: - Lifecycle
-
     func start() {
-        feed.onUpdate = { [weak self] snapshot in self?.apply(snapshot) }
-        feed.onUnavailable = { [weak self] in self?.switchToScriptingFallback() }
-        feed.onAvailable = { [weak self] in self?.restoreFeed() }
-        feed.start()
-    }
-
-    func stop() {
-        feed.stop()
-        artworkDeadline?.cancel()
-        artworkDeadline = nil
-        observers.forEach { DistributedNotificationCenter.default().removeObserver($0) }
-        observers.removeAll()
-        ticker?.invalidate()
-        ticker = nil
-    }
-
-    /// Panel visibility. The position ticker hangs off this: it exists to move
-    /// a bar, and a bar in a collapsed panel is painted for nobody — at four
-    /// wake-ups a second for as long as anything plays. The position itself is
-    /// never lost, because the anchor records where it stood and when: opening
-    /// computes it from there instantly, and the feed's fresh answer corrects
-    /// whatever drifted a beat later.
-    func setActive(_ active: Bool) {
-        isActive = active
-        updateTicker()
-        guard active else { return }
-        tick()
-        if feedAvailable {
-            feed.refresh()
-        } else {
+        isStarted = true
+        if isActive {
+            observePlayers()
             refreshFromPlayers()
         }
     }
 
-    // MARK: - Transport
+    func stop() {
+        isStarted = false
+        removeObservers()
+        artworkDeadline?.cancel()
+        artworkDeadline = nil
+        ticker?.invalidate()
+        ticker = nil
+    }
+
+    func setActive(_ active: Bool) {
+        guard active != isActive else { return }
+        isActive = active
+        if active && isStarted {
+            observePlayers()
+            refreshFromPlayers()
+        } else {
+            removeObservers()
+            updateTicker()
+        }
+    }
 
     func togglePlayPause() {
-        // Optimistic flip so the button feels instant; the feed corrects it.
+        guard let activeApp else { return }
         isPlaying.toggle()
         setAnchor(position)
-        // The per-client command set has no toggle of its own (#23) — Play
-        // and Pause are sent explicitly, by the state just flipped to above.
-        dispatch(feed: isPlaying ? .play : .pause, script: { PlayerBridge.playPause($0) }, key: .playPause)
+        PlayerBridge.playPause(activeApp)
     }
 
     func next() {
-        dispatch(feed: .next, script: { PlayerBridge.next($0) }, key: .next)
+        guard let activeApp else { return }
+        PlayerBridge.next(activeApp)
     }
 
     func previous() {
-        dispatch(feed: .previous, script: { PlayerBridge.previous($0) }, key: .previous)
+        guard let activeApp else { return }
+        PlayerBridge.previous(activeApp)
     }
 
     func seek(to seconds: TimeInterval) {
-        guard duration > 0 else { return }
+        guard let activeApp, duration > 0 else { return }
         let clamped = min(max(0, seconds), duration)
         setAnchor(clamped)
         pendingSeek = (clamped, Date())
-        if feedAvailable {
-            feed.seek(to: clamped)
-        } else if let activeApp {
-            PlayerBridge.seek(activeApp, to: clamped)
+        PlayerBridge.seek(activeApp, to: clamped)
+    }
+
+    private func observePlayers() {
+        guard observers.isEmpty else { return }
+        let center = DistributedNotificationCenter.default()
+        for app in PlayerApp.allCases {
+            observers.append(center.addObserver(
+                forName: app.changeNotification, object: nil, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.refreshFromPlayers() }
+            })
         }
     }
 
-    private func dispatch(
-        feed command: NowPlayingFeed.Command,
-        script: (PlayerApp) -> Void,
-        key: PlayerBridge.MediaKey
-    ) {
-        if feedAvailable {
-            feed.send(command)
-        } else if let activeApp {
-            script(activeApp)
-        } else {
-            PlayerBridge.postMediaKey(key.rawValue)
-        }
+    private func removeObservers() {
+        observers.forEach { DistributedNotificationCenter.default().removeObserver($0) }
+        observers.removeAll()
     }
 
-    // MARK: - Feed
+    private func refreshFromPlayers() {
+        guard isStarted, isActive else { return }
+        PlayerBridge.currentState { [weak self] state in
+            guard let self else { return }
+            guard let state else { return self.clear() }
 
-    private func apply(_ snapshot: NowPlayingFeed.Snapshot) {
-        guard !snapshot.isEmpty else { return clear() }
+            self.activeApp = state.app
+            self.sourceName = state.app.displayName
+            self.track = Track(title: state.title, artist: state.artist, album: state.album, key: state.key)
+            self.isPlaying = state.isPlaying
+            self.duration = state.duration
+            self.canSkip = true
 
-        let key = "\(snapshot.title)|\(snapshot.artist)|\(snapshot.album)"
-        track = Track(title: snapshot.title, artist: snapshot.artist, album: snapshot.album, key: key)
-        isPlaying = snapshot.isPlaying || snapshot.rate > 0
-        duration = snapshot.duration
-        sourceName = snapshot.source
-        // Both directions travel together: no player has ever offered one
-        // without the other, and two separately dimmed arrows would read as
-        // a glitch rather than a limit.
-        canSkip = snapshot.offers(.next) && snapshot.offers(.previous)
-
-        let reported = reportedPosition(from: snapshot)
-
-        // A player needs a moment to act on a seek, and until it does it keeps
-        // reporting the old position. Accepting that would yank the bar back.
-        if let pending = pendingSeek {
-            let settled = abs(reported - pending.target) < 2.5
-            let expired = Date().timeIntervalSince(pending.at) > 1.5
-            if settled || expired {
-                pendingSeek = nil
-                adopt(reported)
+            if let pending = self.pendingSeek {
+                let settled = abs(state.position - pending.target) < 2.5
+                let expired = Date().timeIntervalSince(pending.at) > 1.5
+                if settled || expired {
+                    self.pendingSeek = nil
+                    self.adopt(state.position)
+                }
+            } else {
+                self.adopt(state.position)
             }
-        } else {
-            adopt(reported)
-        }
-        updateTicker()
+            self.updateTicker()
 
-        if let data = snapshot.artwork {
-            artworkKey = key
-            decodeArtwork(data, for: key)
-        } else if artworkKey != key {
-            // Track changed and the payload carried no artwork. The system
-            // often publishes the cover a beat later, so the skeleton covers
-            // the gap — but only for as long as that is a plausible story.
-            artworkKey = key
-            artwork = nil
-            expectArtwork(for: key)
-        }
-    }
-
-    /// JPEG decoding on the main thread is what makes a track change stutter,
-    /// so it happens off it and the finished image is handed back.
-    private func decodeArtwork(_ data: Data, for key: String) {
-        DispatchQueue.global(qos: .userInitiated).async {
-            guard let rep = NSBitmapImageRep(data: data), let cgImage = rep.cgImage else { return }
-            let image = NSImage(
-                cgImage: cgImage,
-                size: NSSize(width: rep.pixelsWide, height: rep.pixelsHigh)
-            )
-            DispatchQueue.main.async { [weak self] in
-                guard let self, self.artworkKey == key else { return }
+            guard self.artworkKey != state.key else { return }
+            self.artworkKey = state.key
+            self.artwork = nil
+            self.expectArtwork(for: state.key)
+            PlayerBridge.artwork(for: state) { [weak self] image in
+                guard let self, self.artworkKey == state.key else { return }
                 self.settleArtwork(image)
             }
         }
     }
 
-    /// Says a cover is still coming, with nothing to cut it short.
-    ///
-    /// For the path that asks someone directly: the completion is the answer
-    /// and it always arrives, so the skeleton holds until it does. Any
-    /// deadline left over from the previous track goes — it was scheduled
-    /// against a key nobody is waiting on any more.
-    private func awaitArtwork() {
-        artworkDeadline?.cancel()
-        artworkDeadline = nil
-        artworkIsPending = true
-    }
-
-    /// Gives a new track a bounded window to produce a cover.
-    ///
-    /// One shot, scheduled by a track change and cancelled by the cover or by
-    /// the next track — not a poller. Nothing is scheduled once the answer is
-    /// known, so a run of coverless tracks costs one pending item, not one per
-    /// track.
     private func expectArtwork(for key: String) {
-        awaitArtwork()
-        // Неизолировано: блок `DispatchWorkItem` помечен `@Sendable` в SDK, и
-        // изоляцию из окружения не наследует. Выполняется он на главной
-        // очереди — отсюда `assumeIsolated`, как у таймера ниже.
+        artworkDeadline?.cancel()
+        artworkIsPending = true
         let deadline = DispatchWorkItem { [weak self] in
             MainActor.assumeIsolated {
                 guard let self, self.artworkKey == key, self.artwork == nil else { return }
@@ -223,16 +147,9 @@ final class MediaController: ObservableObject {
             }
         }
         artworkDeadline = deadline
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.artworkGrace, execute: deadline)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4, execute: deadline)
     }
 
-    /// How long a new track is given to produce a cover: long enough for the
-    /// system to publish one in a follow-up update, short enough that nobody
-    /// reads the shimmer as a hang.
-    private static let artworkGrace: TimeInterval = 4
-
-    /// The answer, whichever it turned out to be. A nil here is not "still
-    /// waiting" — it is "asked everyone, nobody had one".
     private func settleArtwork(_ image: NSImage?) {
         artworkDeadline?.cancel()
         artworkDeadline = nil
@@ -243,109 +160,15 @@ final class MediaController: ObservableObject {
     private func clear() {
         activeApp = nil
         track = nil
-        settleArtwork(nil)
         artworkKey = nil
+        settleArtwork(nil)
         isPlaying = false
         duration = 0
         position = 0
         sourceName = nil
         canSkip = true
+        pendingSeek = nil
         updateTicker()
-    }
-
-    // MARK: - Fallback: scriptable players only
-
-    private func switchToScriptingFallback() {
-        guard feedAvailable else { return }
-        feedAvailable = false
-        // Nothing reports supported commands on this route, and the two apps it
-        // drives both skip — so the arrows come back rather than staying dim
-        // on a state no longer being refreshed.
-        canSkip = true
-        NSLog("Cyclop: Now Playing helper unavailable, falling back to Music/Spotify scripting")
-
-        let center = DistributedNotificationCenter.default()
-        for app in PlayerApp.allCases {
-            observers.append(center.addObserver(
-                forName: app.changeNotification, object: nil, queue: .main
-            ) { [weak self] _ in
-                MainActor.assumeIsolated {
-                    self?.activeApp = app
-                    self?.refreshFromPlayers()
-                }
-            })
-        }
-        refreshFromPlayers()
-    }
-
-    /// The helper is back after the route was declared closed. Scripting is
-    /// stood down — its observers go, `activeApp` with them — and the snapshot
-    /// that raised this repaints the pane from the feed as if nothing happened.
-    private func restoreFeed() {
-        guard !feedAvailable else { return }
-        feedAvailable = true
-        activeApp = nil
-        observers.forEach { DistributedNotificationCenter.default().removeObserver($0) }
-        observers.removeAll()
-        NSLog("Cyclop: Now Playing helper is back, scripting fallback stood down")
-    }
-
-    private func refreshFromPlayers() {
-        PlayerBridge.currentState { [weak self] state in
-            guard let self else { return }
-            guard let state else { return self.clear() }
-
-            self.activeApp = state.app
-            self.sourceName = state.app.displayName
-            self.track = Track(title: state.title, artist: state.artist, album: state.album, key: state.key)
-            self.isPlaying = state.isPlaying
-            self.duration = state.duration
-            self.adopt(state.position)
-            self.updateTicker()
-
-            guard self.artworkKey != state.key else { return }
-            self.artworkKey = state.key
-            self.artwork = nil
-            // Apple Music answers through an Apple event, which can hang if the
-            // player stops responding. Spotify covers are not fetched because
-            // their artwork is available only from a remote URL.
-            switch state.app {
-            case .spotify: self.awaitArtwork()
-            case .music: self.expectArtwork(for: state.key)
-            }
-            PlayerBridge.artwork(for: state) { [weak self] image in
-                guard let self, self.artworkKey == state.key else { return }
-                // Both roads have been walked by the time this returns, so a
-                // nil here is the final answer.
-                self.settleArtwork(image)
-            }
-        }
-    }
-
-    // MARK: - Position
-
-    /// What a report actually says by the time it is read.
-    ///
-    /// MediaRemote does not keep the elapsed time running. The field is a
-    /// reading taken when the session last changed state, and the timestamp
-    /// beside it says when — a tab playing for three minutes keeps reporting
-    /// the second it started at, and many browsers report a plain zero. Taken
-    /// literally, every refresh describes the beginning of the track, and
-    /// `adopt` reads the gap as a seek made in the player and obeys it. Which
-    /// is exactly what hovering did: open the panel, refresh, bar to zero.
-    ///
-    /// So the reading is aged by the clock that came with it. A paused session
-    /// is left alone — its reading is not moving and there is nothing to add.
-    private func reportedPosition(from snapshot: NowPlayingFeed.Snapshot) -> TimeInterval {
-        guard snapshot.isPlaying || snapshot.rate > 0, let takenAt = snapshot.takenAt else {
-            return snapshot.elapsed
-        }
-        let since = Date().timeIntervalSince(takenAt)
-        // A stamp from the future is not a clock to add to. Trust the reading.
-        guard since >= 0 else { return snapshot.elapsed }
-        let rate = snapshot.rate > 0 ? snapshot.rate : 1
-        let aged = snapshot.elapsed + since * rate
-        return snapshot.duration > 0 ? min(aged, snapshot.duration) : aged
     }
 
     private func setAnchor(_ value: TimeInterval) {
@@ -353,34 +176,13 @@ final class MediaController: ObservableObject {
         anchor = (value, Date())
     }
 
-    /// Below this a forward correction is pipeline jitter, not movement.
-    private let forwardTolerance: TimeInterval = 0.75
-    /// A disagreement this large is an event — a seek made in the player
-    /// itself, or a track change — not a discrepancy to be smoothed over.
-    private let seekThreshold: TimeInterval = 2
-
-    /// Takes a position reported by the player, without letting the report undo
-    /// what has already been shown.
-    ///
-    /// Every reading arrives late: the helper, the pipe and the parse sit
-    /// between the player's clock and ours, so a report is normally a little
-    /// *behind* the bar. Accepting it moves the bar backwards — and backwards
-    /// is the one direction anybody notices, because time does not do it. So
-    /// the two directions get different rules rather than one shared tolerance:
-    /// backwards only for something big enough to be a real event, forwards for
-    /// anything past the jitter. Left alone, the bar keeps its own count, which
-    /// runs at exactly the speed the music does.
     private func adopt(_ reported: TimeInterval) {
-        var value = max(0, reported)
-        if duration > 0 { value = min(value, duration) }
+        let value = max(0, duration > 0 ? min(reported, duration) : reported)
         let delta = value - position
-
-        if delta >= forwardTolerance || delta <= -seekThreshold {
+        if delta >= 0.75 || delta <= -2 {
             position = value
             anchor = (value, Date())
         } else {
-            // Keep what is on screen and re-base the clock under it, so the
-            // ignored difference cannot accumulate into the next comparison.
             anchor = (position, Date())
         }
     }
@@ -389,8 +191,6 @@ final class MediaController: ObservableObject {
         ticker?.invalidate()
         ticker = nil
         guard isPlaying, isActive else { return }
-        // Four times a second: the bar advances in sub-pixel steps, so it reads
-        // as smooth without any animation smoothing the seek away with it.
         let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
         }

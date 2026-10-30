@@ -8,7 +8,6 @@
 "Snippets" = "Заготовки";
 "Calendar" = "Календарь";
 "Translate" = "Перевод";
-"Currency" = "Валюта";
 "Settings" = "Настройки";
 
 /* Меню-бар */
@@ -76,12 +75,6 @@
 "Retry" = "Повторить";
 "The %@ → %@ language pack is not installed." = "Не скачан языковой пакет %@ → %@.";
 "macOS does not translate this pair of languages." = "macOS не переводит эту пару языков.";
-
-/* Валюта */
-"Search currency" = "Поиск валюты";
-"Swap currencies" = "Поменять валюты";
-"No currencies match" = "Ничего не найдено";
-"Offline rates are missing or invalid: %@" = "Локальные курсы отсутствуют или повреждены: %@";
 
 /* Календарь */
 "Join" = "Подключиться";

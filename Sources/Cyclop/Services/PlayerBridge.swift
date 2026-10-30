@@ -106,30 +106,6 @@ enum PlayerBridge {
         """) { _ in }
     }
 
-    /// System-wide media key, used when no scriptable player is running.
-    /// Requires Accessibility permission; silently does nothing without it.
-    static func postMediaKey(_ key: Int32) {
-        for down in [true, false] {
-            let flags: Int = down ? 0xA00 : 0xB00
-            guard let event = NSEvent.otherEvent(
-                with: .systemDefined,
-                location: .zero,
-                modifierFlags: NSEvent.ModifierFlags(rawValue: UInt(flags)),
-                timestamp: 0,
-                windowNumber: 0,
-                context: nil,
-                subtype: 8,
-                data1: (Int(key) << 16) | flags,
-                data2: -1
-            ) else { continue }
-            event.cgEvent?.post(tap: .cghidEventTap)
-        }
-    }
-
-    enum MediaKey: Int32 {
-        case playPause = 16, next = 17, previous = 18
-    }
-
     // MARK: - Artwork
 
     static func artwork(for state: PlayerState, completion: @escaping @MainActor (NSImage?) -> Void) {
@@ -149,11 +125,7 @@ enum PlayerBridge {
         }
     }
 
-    /// A cover at its own pixel size, not at whatever resolution the file
-    /// claims. Spotify's oEmbed thumbnail is 300x300 pixels tagged at 300 dpi,
-    /// and `NSImage(data:)` reads that as 72x72 points — which is the number
-    /// the pane then measures for squareness. `MediaController` builds covers
-    /// the same way for the same reason.
+    /// Preserve the artwork's pixel dimensions when creating the image.
     private static func cover(from data: Data?) -> NSImage? {
         guard let data, !data.isEmpty else { return nil }
         // `NSImage` behind it, not instead of it: `raw data of artwork 1` is
